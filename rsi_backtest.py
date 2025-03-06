@@ -112,51 +112,30 @@ class RSIBacktester:
             
         # 파라미터 범위 설정
         param_grid = {
-            'window': np.arange(5, 30, 5),
-            'oversold': np.arange(20, 40, 5),
-            'overbought': np.arange(60, 80, 5)
+            'window': np.arange(5, 21, 3),  # 더 짧은 기간 위주로
+            'oversold': np.arange(25, 35, 2),  # 과매도 구간 세분화
+            'overbought': np.arange(65, 75, 2)  # 과매수 구간 세분화
         }
         
-        results = []
+        # vectorbt의 run_combs 사용하여 모든 조합 테스트
+        rsi_ind = vbt.RSI.run_combs(
+            self.train_data.Close,
+            window=param_grid['window'],
+            short_name='RSI'
+        )
+
+       
+        # 결과를 DataFrame으로 변환
+        self.optimization_results = pd.DataFrame(rsi_ind)
         
-        # 학습 데이터로 최적화
-        for window in param_grid['window']:
-            for oversold in param_grid['oversold']:
-                for overbought in param_grid['overbought']:
-                    rsi = vbt.indicators.RSI.run(
-                        self.train_data['Close'],
-                        window=window,
-                        short_name='RSI'
-                    )
-                    
-                    entries = rsi.rsi_crossed_above(oversold)
-                    exits = rsi.rsi_crossed_below(overbought)
-                    
-                    pf = vbt.Portfolio.from_signals(
-                        close=self.train_data['Close'],
-                        entries=entries,
-                        exits=exits,
-                        init_cash=init_cash,
-                        fees=fees,
-                        freq='1m',
-                        direction='both'
-                    )
-                    
-                    results.append({
-                        'window': window,
-                        'oversold': oversold,
-                        'overbought': overbought,
-                        'total_return': pf.total_return(),
-                        'sharpe_ratio': pf.sharpe_ratio(),
-                        'max_drawdown': pf.max_drawdown()
-                    })
+        # 평가 기준: 거래횟수가 최소 10회 이상인 것 중에서 샤프 비율이 가장 높은 것 선택
+        valid_results = self.optimization_results[self.optimization_results['num_trades'] >= 10]
+        if len(valid_results) > 0:
+            best_params = valid_results.loc[valid_results['sharpe_ratio'].idxmax()]
+        else:
+            best_params = self.optimization_results.loc[self.optimization_results['sharpe_ratio'].idxmax()]
         
-        self.optimization_results = pd.DataFrame(results)
-        
-        best_params = self.optimization_results.loc[
-            self.optimization_results['sharpe_ratio'].idxmax()
-        ]
-        
+        # 최적 파라미터 업데이트
         self.rsi_window = int(best_params['window'])
         self.rsi_oversold = int(best_params['oversold'])
         self.rsi_overbought = int(best_params['overbought'])
@@ -180,6 +159,8 @@ class RSIBacktester:
         print(f"총 수익률: {best_params['total_return'] * 100:.2f}%")
         print(f"샤프 비율: {best_params['sharpe_ratio']:.2f}")
         print(f"최대 낙폭: {best_params['max_drawdown'] * 100:.2f}%")
+        print(f"총 거래 횟수: {int(best_params['num_trades'])}")
+        print(f"승률: {best_params['win_rate']:.2f}%")
     
     def print_results(self):
         """백테스팅 결과 출력"""
@@ -188,6 +169,8 @@ class RSIBacktester:
             return
             
         print("\n===== RSI 전략 백테스팅 결과 =====")
+        print(f"portfolio stats:{self.portfolio.stats()}")
+        print(f"portfolio plot:{self.portfolio.plot()}")
         print(f"총 수익: ${self.portfolio.total_profit():.2f}")
         print(f"총 수익률: {self.portfolio.total_return() * 100:.2f}%")
         print(f"최대 낙폭 (MDD): {self.portfolio.max_drawdown() * 100:.2f}%")
@@ -210,8 +193,8 @@ class RSIBacktester:
                                 gridspec_kw={'height_ratios': [3, 1, 1]})
         
         # 가격 차트와 매수/매도 신호
-        entries = self.portfolio.entries
-        exits = self.portfolio.exits
+        entries = self.rsi.rsi_crossed_above(self.rsi_oversold)
+        exits = self.rsi.rsi_crossed_below(self.rsi_overbought)
         
         axes[0].plot(self.test_data.index, self.test_data['Close'], label='가격', color='blue')
         for idx in entries[entries].index:
@@ -247,10 +230,10 @@ def main():
     backtest = RSIBacktester(
         coin_target='BTC',
         coin_refer='USDT',
-        train_days=60,  # 60일 학습
-        test_days=30,   # 30일 테스트
-        rsi_window=25,
-        rsi_oversold=20,
+        train_days=60,
+        test_days=30,
+        rsi_window=14,  # 기본값 변경
+        rsi_oversold=30,
         rsi_overbought=70
     )
     
