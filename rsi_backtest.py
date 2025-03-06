@@ -126,58 +126,64 @@ class RSIBacktester:
         if self.train_data is None:
             self.fetch_data()
             
-        # 더 효율적인 파라미터 그리드 설정
-        windows = np.arange(5, 21, 3)  # RSI 기간 (5, 8, 11, 14, 17, 20)
-        oversolds = np.arange(25, 35, 2)  # 과매도 기준 (25, 27, 29, 31, 33)
-        overboughts = np.arange(65, 75, 2)  # 과매수 기준 (65, 67, 69, 71, 73)
+        # 파라미터 범위 설정
+        windows = np.arange(5, 21, 3)
+        oversolds = np.arange(25, 35, 2)
+        overboughts = np.arange(65, 75, 2)
         
-        # 최적화 실행을 위한 결과 저장 DataFrame 생성
-        total_combinations = len(windows) * len(oversolds) * len(overboughts)
+        # RSI 계산 - run_combs 사용
+        rsi_indicators = vbt.RSI.run_combs(
+            close=self.train_data.Close,
+            window=windows,
+            param_product=True,
+            r=len(windows),  # 모든 window 조합 사용
+            short_names=[f'rsi_{w}' for w in windows]
+        )
+        
+        # 모든 파라미터 조합에 대한 결과 저장
         results = []
         
-        # 각 파라미터 조합에 대해 백테스팅 실행
-        for window in tqdm(windows):
-            # 각 window 값마다 한 번만 RSI 계산 (최적화)
-            rsi_ind = vbt.indicators.RSI.run(
-                self.train_data['Close'],
-                window=window,
-                short_name='RSI'
+        # 각 RSI 조합에 대해 과매수/과매도 시그널 생성 및 백테스팅
+        for w in windows:
+            rsi_values = getattr(rsi_indicators, f'rsi_{w}')
+            
+            # 과매수/과매도 레벨에 대한 시그널 매트릭스 생성
+            entries_matrix = vbt.signals.generate_nb(
+                shape=(len(self.train_data), len(oversolds) * len(overboughts)),
+                sig_func=lambda i, col: rsi_values.iloc[i] <= oversolds[col // len(overboughts)]
+            )
+            exits_matrix = vbt.signals.generate_nb(
+                shape=(len(self.train_data), len(oversolds) * len(overboughts)),
+                sig_func=lambda i, col: rsi_values.iloc[i] >= overboughts[col % len(overboughts)]
             )
             
-            for oversold in tqdm(oversolds):
-                for overbought in tqdm(overboughts):
-                    # 매수/매도 신호 생성
-                    entries = rsi_ind.rsi_crossed_above(oversold)
-                    exits = rsi_ind.rsi_crossed_below(overbought)
-                    
-                    # 포트폴리오 백테스팅
-                    portfolio = vbt.Portfolio.from_signals(
-                        close=self.train_data['Close'],
-                        entries=entries,
-                        exits=exits,
-                        init_cash=init_cash,
-                        fees=fees,
-                        freq='1m',
-                        direction='both',
-                        upon_opposite_entry='ignore',
-                        upon_long_conflict='ignore'
-                    )
-                    
-                    # 성능 메트릭 계산
-                    metrics = {}
-                    metrics['window'] = window
-                    metrics['oversold'] = oversold
-                    metrics['overbought'] = overbought
-                    metrics['total_return'] = portfolio.total_return()
-                    metrics['sharpe_ratio'] = portfolio.sharpe_ratio()
-                    metrics['max_drawdown'] = portfolio.max_drawdown()
-                    metrics['num_trades'] = len(portfolio.trades)
-                    metrics['win_rate'] = portfolio.trades.win_rate() * 100 if len(portfolio.trades) > 0 else 0
-                    
-                    # 결과 저장
-                    results.append(metrics)
+            # 각 과매수/과매도 조합에 대한 포트폴리오 백테스팅
+            portfolio = vbt.Portfolio.from_signals(
+                close=self.train_data.Close,
+                entries=entries_matrix,
+                exits=exits_matrix,
+                init_cash=init_cash,
+                fees=fees,
+                freq='1m'
+            )
+            
+            # 결과 저장
+            for i, os in enumerate(oversolds):
+                for j, ob in enumerate(overboughts):
+                    col_idx = i * len(overboughts) + j
+                    results.append({
+                        'window': w,
+                        'oversold': os,
+                        'overbought': ob,
+                        'total_return': portfolio.total_return()[col_idx],
+                        'sharpe_ratio': portfolio.sharpe_ratio()[col_idx],
+                        'max_drawdown': portfolio.max_drawdown()[col_idx],
+                        'num_trades': portfolio.trades.count()[col_idx],
+                        'win_rate': portfolio.trades.win_rate()[col_idx] * 100
+                    })
         
         # 결과를 DataFrame으로 변환
+        self.optimization_results = pd.DataFrame(results)
         self.optimization_results = pd.DataFrame(results)
         
         # 평가 기준: 거래횟수가 최소 10회 이상인 것 중에서 샤프 비율이 가장 높은 것 선택
