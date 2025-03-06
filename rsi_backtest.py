@@ -1,4 +1,4 @@
-# RSI 백테스팅 전략 구현
+# RSI 백테스팅 전략 구현 (수정 버전)
 import numpy as np
 import pandas as pd
 import vectorbt as vbt
@@ -35,9 +35,16 @@ rsi_overbought = 70  # 과매수 기준점
 # RSI 계산
 rsi = vbt.RSI.run(data['Close'], window=rsi_window)
 
-# 매수/매도 신호 생성
-entries = rsi.rsi_below(rsi_oversold, crossover=True)  # RSI가 과매도 수준에서 상승 돌파할 때 매수
-exits = rsi.rsi_above(rsi_overbought, crossover=True)  # RSI가 과매수 수준에서 하락 돌파할 때 매도
+# 매수/매도 신호 생성 (수정된 부분)
+# crossover 인자 대신 크로스오버 로직을 직접 구현
+rsi_below_threshold = rsi.rsi < rsi_oversold
+rsi_above_threshold = rsi.rsi > rsi_overbought
+
+# 과매도 상태에서 상승 돌파 (매수 신호)
+entries = (rsi_below_threshold.shift(1) & ~rsi_below_threshold)
+
+# 과매수 상태에서 하락 돌파 (매도 신호)
+exits = (rsi_above_threshold.shift(1) & ~rsi_above_threshold)
 
 # 포트폴리오 백테스팅 실행
 pf = vbt.Portfolio.from_signals(
