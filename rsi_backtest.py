@@ -132,59 +132,56 @@ class RSIBacktester:
         overboughts = np.arange(65, 75, 2)
         
         # RSI 계산 - run_combs 사용
-        rsi_indicators = vbt.RSI.run_combs(
+        rsi = vbt.RSI.run_combs(
             close=self.train_data.Close,
             window=windows,
-            param_product=True,
-            r=len(windows),  # 모든 window 조합 사용
-            short_names=[f'rsi_{w}' for w in windows]
+            param_product=True
         )
         
-        # 모든 파라미터 조합에 대한 결과 저장
-        results = []
+        # 모든 파라미터 조합 생성
+        param_product = np.array([
+            (w, os, ob)
+            for w in windows
+            for os in oversolds
+            for ob in overboughts
+        ])
         
-        # 각 RSI 조합에 대해 과매수/과매도 시그널 생성 및 백테스팅
-        for w in windows:
-            rsi_values = getattr(rsi_indicators, f'rsi_{w}')
-            
-            # 과매수/과매도 레벨에 대한 시그널 매트릭스 생성
-            entries_matrix = vbt.signals.generate_nb(
-                shape=(len(self.train_data), len(oversolds) * len(overboughts)),
-                sig_func=lambda i, col: rsi_values.iloc[i] <= oversolds[col // len(overboughts)]
-            )
-            exits_matrix = vbt.signals.generate_nb(
-                shape=(len(self.train_data), len(oversolds) * len(overboughts)),
-                sig_func=lambda i, col: rsi_values.iloc[i] >= overboughts[col % len(overboughts)]
-            )
-            
-            # 각 과매수/과매도 조합에 대한 포트폴리오 백테스팅
-            portfolio = vbt.Portfolio.from_signals(
-                close=self.train_data.Close,
-                entries=entries_matrix,
-                exits=exits_matrix,
-                init_cash=init_cash,
-                fees=fees,
-                freq='1m'
-            )
-            
-            # 결과 저장
-            for i, os in enumerate(oversolds):
-                for j, ob in enumerate(overboughts):
-                    col_idx = i * len(overboughts) + j
-                    results.append({
-                        'window': w,
-                        'oversold': os,
-                        'overbought': ob,
-                        'total_return': portfolio.total_return()[col_idx],
-                        'sharpe_ratio': portfolio.sharpe_ratio()[col_idx],
-                        'max_drawdown': portfolio.max_drawdown()[col_idx],
-                        'num_trades': portfolio.trades.count()[col_idx],
-                        'win_rate': portfolio.trades.win_rate()[col_idx] * 100
-                    })
+        # 진입/퇴출 시그널 생성
+        entries = pd.DataFrame(False, index=self.train_data.index, columns=range(len(param_product)))
+        exits = pd.DataFrame(False, index=self.train_data.index, columns=range(len(param_product)))
         
+<<<<<<< HEAD
         # 결과를 DataFrame으로 변환
         self.optimization_results = pd.DataFrame(results)
         self.optimization_results = pd.DataFrame(results)
+=======
+        for i, (w, os, ob) in enumerate(param_product):
+            rsi_values = rsi.rsi[w]
+            entries.iloc[:, i] = rsi_values.vbt.crossed_above(os)
+            exits.iloc[:, i] = rsi_values.vbt.crossed_below(ob)
+        
+        # 포트폴리오 백테스팅
+        portfolio = vbt.Portfolio.from_signals(
+            close=self.train_data.Close,
+            entries=entries,
+            exits=exits,
+            init_cash=init_cash,
+            fees=fees,
+            freq='1m'
+        )
+        
+        # 결과 데이터프레임 생성
+        self.optimization_results = pd.DataFrame({
+            'window': param_product[:, 0],
+            'oversold': param_product[:, 1],
+            'overbought': param_product[:, 2],
+            'total_return': portfolio.total_return(),
+            'sharpe_ratio': portfolio.sharpe_ratio(),
+            'max_drawdown': portfolio.max_drawdown(),
+            'num_trades': portfolio.trades.count(),
+            'win_rate': portfolio.trades.win_rate() * 100
+        })
+>>>>>>> bf0f0f7 (rsi backtest)
         
         # 평가 기준: 거래횟수가 최소 10회 이상인 것 중에서 샤프 비율이 가장 높은 것 선택
         valid_results = self.optimization_results[self.optimization_results['num_trades'] >= 10]
