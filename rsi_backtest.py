@@ -4,364 +4,270 @@ import pandas as pd
 import vectorbt as vbt
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
+from matplotlib import font_manager, rc
 
-# 한글 폰트 설정
-plt.rcParams['font.family'] = 'AppleGothic'  # macOS용 한글 폰트
-plt.rcParams['axes.unicode_minus'] = False   # 마이너스 기호 깨짐 방지
-
-# 데이터 다운로드 파라미터 설정
-coin_target = 'BTC'  # 비트코인
-coin_refer = 'USDT'  # 테더
-end_date = datetime.now()  # 현재 시간까지
-start_date = end_date - timedelta(days=30)  # 30일 전부터
-
-# Binance에서 데이터 다운로드
-binance_data = vbt.BinanceData.download(
-    '%s%s' % (coin_target, coin_refer),
-    start=start_date,
-    end=end_date,
-    interval='1m'
-)
-data = binance_data.get()
-
-# 데이터 확인
-print("데이터 샘플:")
-print(data.head())
-print("\n데이터 정보:")
-print(data.info())
-
-# RSI 파라미터 설정
-rsi_window = 14  # RSI 계산 기간
-rsi_oversold = 30  # 과매도 기준점
-rsi_overbought = 70  # 과매수 기준점
-
-# RSI 계산
-rsi = vbt.indicators.RSI.run(
-    data['Close'],
-    window=rsi_window,
-    short_name='RSI'
-)
-
-# 매수/매도 신호 생성
-entries = rsi.rsi_crossed_above(rsi_oversold)  # RSI가 과매도 수준을 상향 돌파할 때 매수
-exits = rsi.rsi_crossed_below(rsi_overbought)  # RSI가 과매수 수준을 하향 돌파할 때 매도
-
-# 포트폴리오 백테스팅 실행
-pf = vbt.Portfolio.from_signals(
-    close=data['Close'],
-    entries=entries,
-    exits=exits,
-    init_cash=1000,
-    fees=0.001,
-    freq='1m',
-    direction='both',  # 'long' 대신 'both' 사용
-    upon_opposite_entry='ignore',
-    upon_long_conflict='ignore',
-    log=True
-)
-
-# 백테스팅 결과 출력
-print("\n===== RSI 전략 백테스팅 결과 =====")
-print(f"총 수익: ${pf.total_profit():.2f}")
-print(f"총 수익률: {pf.total_return() * 100:.2f}%")
-print(f"최대 낙폭 (MDD): {pf.max_drawdown() * 100:.2f}%")
-print(f"샤프 비율: {pf.sharpe_ratio():.2f}")
-print(f"총 거래 횟수: {len(pf.trades)}")
-
-# 승률 계산 (수정된 방식)
-winning_trades = (pf.trades.returns > 0).sum()
-total_trades = len(pf.trades)
-win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
-print(f"승률: {win_rate:.2f}%")
-
-# 결과 시각화
-fig, axes = plt.subplots(3, 1, figsize=(15, 15), gridspec_kw={'height_ratios': [3, 1, 1]})
-
-# 가격 차트와 매수/매도 신호
-axes[0].plot(data.index, data['Close'], label='가격', color='blue')
-for idx in entries[entries].index:
-    axes[0].axvline(x=idx, color='g', alpha=0.3, linestyle='--')
-for idx in exits[exits].index:
-    axes[0].axvline(x=idx, color='r', alpha=0.3, linestyle='--')
-axes[0].set_title('가격 차트 및 매수/매도 신호')
-axes[0].legend()
-
-# RSI 지표
-axes[1].plot(data.index, rsi.rsi, label='RSI', color='purple')
-axes[1].axhline(y=rsi_oversold, color='g', linestyle='--', label='과매도')
-axes[1].axhline(y=rsi_overbought, color='r', linestyle='--', label='과매수')
-axes[1].set_title('RSI 지표')
-axes[1].legend()
-
-# 자본금 변화
-equity = pf.value()  # equity_curve 대신 value() 사용
-axes[2].plot(equity.index, equity, label='자본금', color='green')
-axes[2].set_title('자본금 변화')
-axes[2].legend()
-
-# x축 레이블 포맷 설정
-for ax in axes:
-    ax.tick_params(axis='x', rotation=45)
-    ax.grid(True)
-
-plt.tight_layout()
-plt.show()
-
-# 월별 수익률 분석
-monthly_returns = pf.returns.resample('M').apply(lambda x: (1 + x).prod() - 1)
-print("\n===== 월별 수익률 =====")
-print(monthly_returns)
-
-# 파라미터 최적화 함수
-def optimize_rsi_strategy():
-    # 파라미터 범위 설정
-    param_grid = {
-        'window': np.arange(5, 30, 5),
-        'oversold': np.arange(20, 40, 5),
-        'overbought': np.arange(60, 80, 5)
-    }
+class RSIBacktester:
+    def __init__(self, coin_target='BTC', coin_refer='USDT', train_days=60, test_days=30,
+                 rsi_window=25, rsi_oversold=20, rsi_overbought=70):
+        """RSI 백테스팅 클래스 초기화
+        
+        Args:
+            coin_target (str): 대상 코인 (예: 'BTC')
+            coin_refer (str): 기준 화폐 (예: 'USDT')
+            train_days (int): 학습 기간 (일)
+            test_days (int): 테스트 기간 (일)
+            rsi_window (int): RSI 계산 기간
+            rsi_oversold (int): 과매도 기준점
+            rsi_overbought (int): 과매수 기준점
+        """
+        self.coin_target = coin_target
+        self.coin_refer = coin_refer
+        self.train_days = train_days
+        self.test_days = test_days
+        self.rsi_window = rsi_window
+        self.rsi_oversold = rsi_oversold
+        self.rsi_overbought = rsi_overbought
+        
+        # 데이터 및 분석 결과 저장용 변수
+        self.train_data = None
+        self.test_data = None
+        self.rsi = None
+        self.portfolio = None
+        self.optimization_results = None
+        
+        # 시각화 설정
+        plt.rcParams['font.family'] = 'AppleGothic'
+        plt.rcParams['axes.unicode_minus'] = False
+        
+    def fetch_data(self):
+        """학습 및 테스트용 데이터 다운로드"""
+        end_date = datetime.now()
+        test_start = end_date - timedelta(days=self.test_days)
+        train_start = test_start - timedelta(days=self.train_days)
+        
+        # 학습 데이터 다운로드
+        train_data = vbt.BinanceData.download(
+            f'{self.coin_target}{self.coin_refer}',
+            start=train_start,
+            end=test_start,
+            interval='1m'
+        )
+        self.train_data = train_data.get()
+        
+        # 테스트 데이터 다운로드
+        test_data = vbt.BinanceData.download(
+            f'{self.coin_target}{self.coin_refer}',
+            start=test_start,
+            end=end_date,
+            interval='1m'
+        )
+        self.test_data = test_data.get()
+        
+        return self.train_data, self.test_data
     
-    # 최적화 결과를 저장할 리스트
-    results = []
+    def calculate_rsi(self):
+        """RSI 지표 계산"""
+        if self.test_data is None:
+            self.fetch_data()
+            
+        self.rsi = vbt.indicators.RSI.run(
+            self.test_data['Close'],
+            window=self.rsi_window,
+            short_name='RSI'
+        )
+        return self.rsi
     
-    # 모든 파라미터 조합에 대해 백테스팅
-    for window in param_grid['window']:
-        for oversold in param_grid['oversold']:
-            for overbought in param_grid['overbought']:
-                # RSI 계산
-                rsi = vbt.indicators.RSI.run(
-                    data['Close'],
-                    window=window
-                )
-                
-                # 매수/매도 신호 생성
-                entries = rsi.rsi_crossed_above(oversold)
-                exits = rsi.rsi_crossed_below(overbought)
-                
-                # 포트폴리오 백테스팅
-                pf = vbt.Portfolio.from_signals(
-                    close=data['Close'],
-                    entries=entries,
-                    exits=exits,
-                    init_cash=1000,
-                    fees=0.001,
-                    freq='1m',
-                    direction='both'  # 여기도 'both'로 수정
-                )
-                
-                # 결과 저장
-                results.append({
-                    'window': window,
-                    'oversold': oversold,
-                    'overbought': overbought,
-                    'total_return': pf.total_return(),
-                    'sharpe_ratio': pf.sharpe_ratio(),
-                    'max_drawdown': pf.max_drawdown()
-                })
+    def run_backtest(self, init_cash=1000, fees=0.001):
+        """테스트 데이터로 백테스팅 실행"""
+        if self.test_data is None:
+            self.fetch_data()
+            
+        self.rsi = vbt.indicators.RSI.run(
+            self.test_data['Close'],
+            window=self.rsi_window,
+            short_name='RSI'
+        )
+        
+        entries = self.rsi.rsi_crossed_above(self.rsi_oversold)
+        exits = self.rsi.rsi_crossed_below(self.rsi_overbought)
+        
+        self.portfolio = vbt.Portfolio.from_signals(
+            close=self.test_data['Close'],
+            entries=entries,
+            exits=exits,
+            init_cash=init_cash,
+            fees=fees,
+            freq='1m',
+            direction='both',
+            upon_opposite_entry='ignore',
+            upon_long_conflict='ignore',
+            log=True
+        )
+        return self.portfolio
     
-    # 결과를 DataFrame으로 변환
-    results_df = pd.DataFrame(results)
+    def optimize_parameters(self, init_cash=1000, fees=0.001):
+        """학습 데이터로 RSI 전략의 최적 파라미터를 찾습니다."""
+        if self.train_data is None:
+            self.fetch_data()
+            
+        # 파라미터 범위 설정
+        param_grid = {
+            'window': np.arange(5, 30, 5),
+            'oversold': np.arange(20, 40, 5),
+            'overbought': np.arange(60, 80, 5)
+        }
+        
+        results = []
+        
+        # 학습 데이터로 최적화
+        for window in param_grid['window']:
+            for oversold in param_grid['oversold']:
+                for overbought in param_grid['overbought']:
+                    rsi = vbt.indicators.RSI.run(
+                        self.train_data['Close'],
+                        window=window,
+                        short_name='RSI'
+                    )
+                    
+                    entries = rsi.rsi_crossed_above(oversold)
+                    exits = rsi.rsi_crossed_below(overbought)
+                    
+                    pf = vbt.Portfolio.from_signals(
+                        close=self.train_data['Close'],
+                        entries=entries,
+                        exits=exits,
+                        init_cash=init_cash,
+                        fees=fees,
+                        freq='1m',
+                        direction='both'
+                    )
+                    
+                    results.append({
+                        'window': window,
+                        'oversold': oversold,
+                        'overbought': overbought,
+                        'total_return': pf.total_return(),
+                        'sharpe_ratio': pf.sharpe_ratio(),
+                        'max_drawdown': pf.max_drawdown()
+                    })
+        
+        self.optimization_results = pd.DataFrame(results)
+        
+        best_params = self.optimization_results.loc[
+            self.optimization_results['sharpe_ratio'].idxmax()
+        ]
+        
+        self.rsi_window = int(best_params['window'])
+        self.rsi_oversold = int(best_params['oversold'])
+        self.rsi_overbought = int(best_params['overbought'])
+        
+        return best_params.to_dict()
     
-    # 최적 파라미터 찾기 (샤프 비율 기준)
-    best_params = results_df.loc[results_df['sharpe_ratio'].idxmax()]
+    def print_optimization_results(self):
+        """최적화 결과를 출력합니다."""
+        if self.optimization_results is None:
+            print("최적화를 먼저 실행해주세요.")
+            return
+            
+        best_params = self.optimization_results.loc[
+            self.optimization_results['sharpe_ratio'].idxmax()
+        ]
+        
+        print("\n===== RSI 전략 최적화 결과 =====")
+        print(f"최적 RSI 기간: {int(best_params['window'])}")
+        print(f"최적 과매도 기준: {int(best_params['oversold'])}")
+        print(f"최적 과매수 기준: {int(best_params['overbought'])}")
+        print(f"총 수익률: {best_params['total_return'] * 100:.2f}%")
+        print(f"샤프 비율: {best_params['sharpe_ratio']:.2f}")
+        print(f"최대 낙폭: {best_params['max_drawdown'] * 100:.2f}%")
     
-    print("\n===== 최적 파라미터 =====")
-    print(f"RSI 기간: {best_params['window']}")
-    print(f"과매도 기준: {best_params['oversold']}")
-    print(f"과매수 기준: {best_params['overbought']}")
-    print(f"총 수익률: {best_params['total_return'] * 100:.2f}%")
-    print(f"샤프 비율: {best_params['sharpe_ratio']:.2f}")
-    print(f"최대 낙폭: {best_params['max_drawdown'] * 100:.2f}%")
+    def print_results(self):
+        """백테스팅 결과 출력"""
+        if self.portfolio is None:
+            print("백테스트를 먼저 실행해주세요.")
+            return
+            
+        print("\n===== RSI 전략 백테스팅 결과 =====")
+        print(f"총 수익: ${self.portfolio.total_profit():.2f}")
+        print(f"총 수익률: {self.portfolio.total_return() * 100:.2f}%")
+        print(f"최대 낙폭 (MDD): {self.portfolio.max_drawdown() * 100:.2f}%")
+        print(f"샤프 비율: {self.portfolio.sharpe_ratio():.2f}")
+        print(f"총 거래 횟수: {len(self.portfolio.trades)}")
+        
+        # 승률 계산
+        winning_trades = (self.portfolio.trades.returns > 0).sum()
+        total_trades = len(self.portfolio.trades)
+        win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+        print(f"승률: {win_rate:.2f}%")
     
-    return best_params.to_dict()
+    def plot_results(self):
+        """결과 시각화"""
+        if self.portfolio is None:
+            print("백테스트를 먼저 실행해주세요.")
+            return
+            
+        fig, axes = plt.subplots(3, 1, figsize=(15, 15), 
+                                gridspec_kw={'height_ratios': [3, 1, 1]})
+        
+        # 가격 차트와 매수/매도 신호
+        entries = self.portfolio.entries
+        exits = self.portfolio.exits
+        
+        axes[0].plot(self.test_data.index, self.test_data['Close'], label='가격', color='blue')
+        for idx in entries[entries].index:
+            axes[0].axvline(x=idx, color='g', alpha=0.3, linestyle='--')
+        for idx in exits[exits].index:
+            axes[0].axvline(x=idx, color='r', alpha=0.3, linestyle='--')
+        axes[0].set_title('Price Chart and Signals')
+        axes[0].legend()
+        
+        # RSI 지표
+        axes[1].plot(self.test_data.index, self.rsi.rsi, label='RSI', color='purple')
+        axes[1].axhline(y=self.rsi_oversold, color='g', linestyle='--', label='과매도')
+        axes[1].axhline(y=self.rsi_overbought, color='r', linestyle='--', label='과매수')
+        axes[1].set_title('RSI Indicator')
+        axes[1].legend()
+        
+        # 자본금 변화
+        equity = self.portfolio.value()
+        axes[2].plot(equity.index, equity, label='자본금', color='green')
+        axes[2].set_title('Portfolio Value')
+        axes[2].legend()
+        
+        # x축 레이블 포맷 설정
+        for ax in axes:
+            ax.tick_params(axis='x', rotation=45)
+            ax.grid(True)
+        
+        plt.tight_layout()
+        plt.show()
 
-# 파라미터 최적화 실행 (필요한 경우 주석 해제)
-# best_params = optimize_rsi_strategy()
-
-# RSI 백테스팅 전략 구현 (수정 버전)
-import numpy as np
-import pandas as pd
-import vectorbt as vbt
-import matplotlib.pyplot as plt
-from datetime import datetime, timedelta
-import matplotlib.font_manager as fm
-
-# 한글 폰트 설정 (다음 중 하나 선택)
-plt.rcParams['font.family'] = 'NanumGothic'  # 나눔고딕
-# plt.rcParams['font.family'] = 'Malgun Gothic'  # 맑은 고딕
-# plt.rcParams['font.family'] = 'AppleGothic'  # macOS용
-plt.rcParams['axes.unicode_minus'] = False   # 마이너스 기호 깨짐 방지
-
-# 사용 가능한 폰트 목록 출력 (문제 해결에 도움이 될 수 있음)
-print("\n사용 가능한 폰트:")
-for font in fm.findSystemFonts():
-    print(fm.FontProperties(fname=font).get_name())
-
-# 데이터 다운로드 파라미터 설정
-coin_target = 'BTC'  # 비트코인
-coin_refer = 'USDT'  # 테더
-end_date = datetime.now()  # 현재 시간까지
-start_date = end_date - timedelta(days=30)  # 30일 전부터
-
-# Binance에서 데이터 다운로드
-binance_data = vbt.BinanceData.download(
-    '%s%s' % (coin_target, coin_refer),
-    start=start_date,
-    end=end_date,
-    interval='1m'
-)
-data = binance_data.get()
-
-# 데이터 확인
-print("데이터 샘플:")
-print(data.head())
-print("\n데이터 정보:")
-print(data.info())
-
-# RSI 파라미터 설정
-rsi_window = 14  # RSI 계산 기간
-rsi_oversold = 30  # 과매도 기준점
-rsi_overbought = 70  # 과매수 기준점
-
-# RSI 계산
-rsi = vbt.indicators.RSI.run(
-    data['Close'],
-    window=rsi_window,
-    short_name='RSI'
-)
-
-# 매수/매도 신호 생성
-entries = rsi.rsi_crossed_above(rsi_oversold)  # RSI가 과매도 수준을 상향 돌파할 때 매수
-exits = rsi.rsi_crossed_below(rsi_overbought)  # RSI가 과매수 수준을 하향 돌파할 때 매도
-
-# 포트폴리오 백테스팅 실행
-pf = vbt.Portfolio.from_signals(
-    close=data['Close'],
-    entries=entries,
-    exits=exits,
-    init_cash=1000,
-    fees=0.001,
-    freq='1m',
-    direction='both',  # 'long' 대신 'both' 사용
-    upon_opposite_entry='ignore',
-    upon_long_conflict='ignore',
-    log=True
-)
-
-# 백테스팅 결과 출력
-print("\n===== RSI 전략 백테스팅 결과 =====")
-print(f"총 수익: ${pf.total_profit():.2f}")
-print(f"총 수익률: {pf.total_return() * 100:.2f}%")
-print(f"최대 낙폭 (MDD): {pf.max_drawdown() * 100:.2f}%")
-print(f"샤프 비율: {pf.sharpe_ratio():.2f}")
-print(f"총 거래 횟수: {len(pf.trades)}")
-
-# 승률 계산 (수정된 방식)
-winning_trades = (pf.trades.returns > 0).sum()
-total_trades = len(pf.trades)
-win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
-print(f"승률: {win_rate:.2f}%")
-
-# 결과 시각화
-fig, axes = plt.subplots(3, 1, figsize=(15, 15), gridspec_kw={'height_ratios': [3, 1, 1]})
-
-# 가격 차트와 매수/매도 신호
-axes[0].plot(data.index, data['Close'], label='가격', color='blue')
-for idx in entries[entries].index:
-    axes[0].axvline(x=idx, color='g', alpha=0.3, linestyle='--')
-for idx in exits[exits].index:
-    axes[0].axvline(x=idx, color='r', alpha=0.3, linestyle='--')
-axes[0].set_title('가격 차트 및 매수/매도 신호')
-axes[0].legend()
-
-# RSI 지표
-axes[1].plot(data.index, rsi.rsi, label='RSI', color='purple')
-axes[1].axhline(y=rsi_oversold, color='g', linestyle='--', label='과매도')
-axes[1].axhline(y=rsi_overbought, color='r', linestyle='--', label='과매수')
-axes[1].set_title('RSI 지표')
-axes[1].legend()
-
-# 자본금 변화
-equity = pf.value()  # equity_curve 대신 value() 사용
-axes[2].plot(equity.index, equity, label='자본금', color='green')
-axes[2].set_title('자본금 변화')
-axes[2].legend()
-
-# x축 레이블 포맷 설정
-for ax in axes:
-    ax.tick_params(axis='x', rotation=45)
-    ax.grid(True)
-
-plt.tight_layout()
-plt.show()
-
-# 월별 수익률 분석
-monthly_returns = pf.returns.resample('M').apply(lambda x: (1 + x).prod() - 1)
-print("\n===== 월별 수익률 =====")
-print(monthly_returns)
-
-# 파라미터 최적화 함수
-def optimize_rsi_strategy():
-    # 파라미터 범위 설정
-    param_grid = {
-        'window': np.arange(5, 30, 5),
-        'oversold': np.arange(20, 40, 5),
-        'overbought': np.arange(60, 80, 5)
-    }
+def main():
+    # RSI 백테스터 인스턴스 생성
+    backtest = RSIBacktester(
+        coin_target='BTC',
+        coin_refer='USDT',
+        train_days=60,  # 60일 학습
+        test_days=30,   # 30일 테스트
+        rsi_window=25,
+        rsi_oversold=20,
+        rsi_overbought=70
+    )
     
-    # 최적화 결과를 저장할 리스트
-    results = []
+    # 학습 데이터로 최적화 실행
+    print("학습 데이터로 파라미터 최적화 중...")
+    backtest.optimize_parameters()
+    backtest.print_optimization_results()
     
-    # 모든 파라미터 조합에 대해 백테스팅
-    for window in param_grid['window']:
-        for oversold in param_grid['oversold']:
-            for overbought in param_grid['overbought']:
-                # RSI 계산
-                rsi = vbt.indicators.RSI.run(
-                    data['Close'],
-                    window=window
-                )
-                
-                # 매수/매도 신호 생성
-                entries = rsi.rsi_crossed_above(oversold)
-                exits = rsi.rsi_crossed_below(overbought)
-                
-                # 포트폴리오 백테스팅
-                pf = vbt.Portfolio.from_signals(
-                    close=data['Close'],
-                    entries=entries,
-                    exits=exits,
-                    init_cash=1000,
-                    fees=0.001,
-                    freq='1m',
-                    direction='both'  # 여기도 'both'로 수정
-                )
-                
-                # 결과 저장
-                results.append({
-                    'window': window,
-                    'oversold': oversold,
-                    'overbought': overbought,
-                    'total_return': pf.total_return(),
-                    'sharpe_ratio': pf.sharpe_ratio(),
-                    'max_drawdown': pf.max_drawdown()
-                })
+    # 테스트 데이터로 백테스팅 실행
+    print("\n최적화된 파라미터로 테스트 데이터 백테스팅 실행 중...")
+    backtest.run_backtest(init_cash=1000, fees=0.001)
     
-    # 결과를 DataFrame으로 변환
-    results_df = pd.DataFrame(results)
+    # 결과 출력
+    backtest.print_results()
     
-    # 최적 파라미터 찾기 (샤프 비율 기준)
-    best_params = results_df.loc[results_df['sharpe_ratio'].idxmax()]
-    
-    print("\n===== 최적 파라미터 =====")
-    print(f"RSI 기간: {best_params['window']}")
-    print(f"과매도 기준: {best_params['oversold']}")
-    print(f"과매수 기준: {best_params['overbought']}")
-    print(f"총 수익률: {best_params['total_return'] * 100:.2f}%")
-    print(f"샤프 비율: {best_params['sharpe_ratio']:.2f}")
-    print(f"최대 낙폭: {best_params['max_drawdown'] * 100:.2f}%")
-    
-    return best_params.to_dict()
+    # 결과 시각화
+    backtest.plot_results()
 
-# 파라미터 최적화 실행 (필요한 경우 주석 해제)
-# best_params = optimize_rsi_strategy()
+if __name__ == "__main__":
+    main()
