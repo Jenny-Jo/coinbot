@@ -150,11 +150,6 @@ class RSIBacktester:
         entries = pd.DataFrame(False, index=self.train_data.index, columns=range(len(param_product)))
         exits = pd.DataFrame(False, index=self.train_data.index, columns=range(len(param_product)))
         
-<<<<<<< HEAD
-        # 결과를 DataFrame으로 변환
-        self.optimization_results = pd.DataFrame(results)
-        self.optimization_results = pd.DataFrame(results)
-=======
         for i, (w, os, ob) in enumerate(param_product):
             rsi_values = rsi.rsi[w]
             entries.iloc[:, i] = rsi_values.vbt.crossed_above(os)
@@ -181,7 +176,6 @@ class RSIBacktester:
             'num_trades': portfolio.trades.count(),
             'win_rate': portfolio.trades.win_rate() * 100
         })
->>>>>>> bf0f0f7 (rsi backtest)
         
         # 평가 기준: 거래횟수가 최소 10회 이상인 것 중에서 샤프 비율이 가장 높은 것 선택
         valid_results = self.optimization_results[self.optimization_results['num_trades'] >= 10]
@@ -284,6 +278,7 @@ class RSIBacktester:
                     print("최대 연속 손실: 정보 없음")
             except Exception as e:
                 print(f"연속 거래 통계 계산 중 오류 발생: {e}")
+        return stats
     
     def plot_rsi_distribution(self):
         """RSI 분포 시각화"""
@@ -492,16 +487,24 @@ class RSIBacktester:
             print(f"PNL 평균: ${trades.pnl.mean():.2f}")
             print(f"거래 기간 범위: {trades.duration.min()} ~ {trades.duration.max()} 분")
 
-def main():
+def main(
+    coin_target='BTC',
+    coin_refer='USDT',
+    train_days=60,
+    test_days=30,
+    rsi_window=14,
+    rsi_oversold=30,
+    rsi_overbought=70
+):
     # RSI 백테스터 인스턴스 생성
     backtest = RSIBacktester(
-        coin_target='BTC',
-        coin_refer='USDT',
-        train_days=60,
-        test_days=30,
-        rsi_window=14,
-        rsi_oversold=30,
-        rsi_overbought=70
+        coin_target=coin_target,
+        coin_refer=coin_refer,
+        train_days=train_days,
+        test_days=test_days,
+        rsi_window=rsi_window,
+        rsi_oversold=rsi_oversold,
+        rsi_overbought=rsi_overbought
     )
     
     # 학습 데이터로 최적화 실행
@@ -515,20 +518,23 @@ def main():
     backtest.run_backtest(init_cash=1000, fees=0.001)
     
     # 기본 결과 출력
-    backtest.print_backtest_results()
+    stats = backtest.print_backtest_results()
+    print(stats)
     
     # 거래 통계 분석
     backtest.analyze_trade_statistics()
     
+    # 아래 시각화는 필요 없으면 주석 처리
     # RSI 분포 시각화
-    backtest.plot_rsi_distribution()
+    # backtest.plot_rsi_distribution()
     
     # 결과 시각화
-    backtest.plot_results()
+    # backtest.plot_results()
     
     # vectorBT 내장 시각화도 활용
-    print("\nvectorBT 내장 시각화:")
-    backtest.plot_results(subplots=False)
+    # print("\nvectorBT 내장 시각화:")
+    # backtest.plot_results(subplots=False)
+    return stats
 
 if __name__ == "__main__":
     main()
