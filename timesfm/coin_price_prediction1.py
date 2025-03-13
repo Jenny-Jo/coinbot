@@ -92,7 +92,9 @@ class CoinPricePredictor:
     def get_market_data(self) -> pd.DataFrame:
         """시장 데이터 수집"""
         end_date = datetime.now()
-        start_date = end_date - timedelta(days=365*2)
+        start_date = end_date - timedelta(days=365*10)  # 
+        
+        print(f"데이터 수집 기간: {start_date} ~ {end_date}")
         
         tickers = {
             'BTC-USD': 'Bitcoin',
@@ -126,18 +128,38 @@ class CoinPricePredictor:
         if len(df) < min_required:
             raise ValueError(f"충분한 데이터를 수집하지 못했습니다. 최소 {min_required}일의 데이터가 필요합니다.")
         
+        print(f"\n데이터셋 정보:")
+        print(f"수집된 총 데이터 일수: {len(df)}")
+        print(f"필요한 최소 데이터 일수: {self.context_len + self.horizon_len}")
+        print(f"Bitcoin 데이터 시작일: {df.index[0]}")
+        print(f"Bitcoin 데이터 종료일: {df.index[-1]}")
+        
         return df
 
     def prepare_datasets(self, df: pd.DataFrame, train_split: float = 0.8) -> Tuple[Dataset, Dataset]:
         """데이터셋 준비"""
-        # 데이터 정규화
         series = df['Bitcoin_Close'].values.reshape(-1, 1)
         series = self.scaler.fit_transform(series).flatten()
+        
+        # 데이터 크기 검증
+        total_window = self.context_len + self.horizon_len  # 192 + 128 = 320
+        print(f"\n데이터셋 분할 정보:")
+        print(f"컨텍스트 길이: {self.context_len}")
+        print(f"예측 기간: {self.horizon_len}")
+        print(f"필요한 윈도우 크기: {total_window}")
+        print(f"전체 데이터 길이: {len(series)}")
+        
+        if len(series) < total_window:
+            raise ValueError(f"데이터가 부족합니다. {total_window}일 이상의 데이터가 필요하지만, {len(series)}일의 데이터만 있습니다.")
         
         # 학습/검증 데이터 분할
         train_size = int(len(series) * train_split)
         train_data = series[:train_size]
         val_data = series[train_size:]
+        
+        print(f"\n분할 결과:")
+        print(f"학습 데이터 길이: {len(train_data)}")
+        print(f"검증 데이터 길이: {len(val_data)}")
         
         # 데이터셋 생성 - horizon_length를 128로 고정
         train_dataset = TimeSeriesDataset(
