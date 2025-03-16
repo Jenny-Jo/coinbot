@@ -127,7 +127,7 @@ class CoinPricePredictor:
         min_required = self.context_len + 128
         if len(df) < min_required:
             raise ValueError(f"충분한 데이터를 수집하지 못했습니다. 최소 {min_required}일의 데이터가 필요합니다.")
-        
+        ㄴㅌ
         print(f"\n데이터셋 정보:")
         print(f"수집된 총 데이터 일수: {len(df)}")
         print(f"필요한 최소 데이터 일수: {self.context_len + self.horizon_len}")
